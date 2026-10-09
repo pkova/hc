@@ -1578,7 +1578,7 @@ b32 spent(parser *p) {
 
 enum {
   tok_comment, tok_string, tok_number, tok_keyword, tok_function,
-  tok_variable, tok_type, tok_term,
+  tok_variable, tok_type, tok_term, tok_operator,
 };
 
 typedef struct {
@@ -1600,6 +1600,15 @@ void note(parser *p, size start, size end, i32 type) {
   t->end = (u32)end;
   t->type = (u8)type;
 }
+
+// the mark of an irregular form, which stands for a rune and is colored
+// as one: the = of =(a b) for .=, the _ of _a for $_. Brackets alone,
+// as in (a b) and [a b], are left plain
+void sugar(parser *p, size at) { note(p, at, at + 1, tok_keyword); }
+
+// the . of a.b and the : of a:b, as in tree-sitter-hoon. One byte long,
+// it paints over the name, type or function it sits in
+void delimiter(parser *p, size at) { note(p, at, at + 1, tok_operator); }
 
 // Whitespace
 
@@ -3304,7 +3313,6 @@ noun most(parser *p, size *pos, b32 tol, b32 (*sep)(parser *, size *, b32), rule
 
 b32 sepace(parser *p, size *pos, b32 tol) { return ace(p, pos); }
 b32 sepgap(parser *p, size *pos, b32 tol) { return gap(p, pos); }
-b32 sepcol(parser *p, size *pos, b32 tol) { return chr(p, pos, ':'); }
 
 noun widerule(parser *p, size *pos, b32 tol) { return wide(p, pos); }
 noun tallrule(parser *p, size *pos, b32 tol) { return tall(p, pos); }
@@ -3312,12 +3320,47 @@ noun wyderule(parser *p, size *pos, b32 tol) { return wyde(p, pos); }
 noun roperule(parser *p, size *pos, b32 tol) { return rope(p, pos); }
 noun symrule(parser *p, size *pos, b32 tol) { return sym(p, pos); }
 
+// a name at s, or names joined by :, is a function, as after the bracket
+// in (add a b), (pure:m a) and ~(put by m), as the door by in ~(put by m),
+// and as after the rune in %-  add; not (snag.lib a), since an arm isn't
+// reached with a dot, nor the b of a(b 1), which is a wing to change. The
+// names are noted apiece, to paint over the wings they were noted as, and
+// to leave the colons between them as delimiters
+void notefun(parser *p, size s) {
+  if (!p->toks) return;
+  u8 *b = p->buf;
+  size e = s, n = 0;
+  size at[64];
+  for (;;) {
+    if (e >= p->len || b[e] < 'a' || b[e] > 'z' || n == countof(at)) return;
+    at[n++] = e;
+    while (e < p->len && ((b[e] >= 'a' && b[e] <= 'z') || (b[e] >= '0' && b[e] <= '9')
+                          || b[e] == '-')) e++;
+    if (e >= p->len || b[e] != ':') break;
+    e++;
+  }
+  if (e < p->len && b[e] != ' ' && b[e] != '\n' && b[e] != ')' && b[e] != '(') return;
+  for (size i = 0; i < n; i++) {
+    size to = i + 1 < n ? at[i+1] - 1 : e;
+    note(p, at[i], to, tok_function);
+  }
+}
+
 // (a b c) etc.
 noun parens(parser *p, size *pos, rule fel) {
   if (!chr(p, pos, '(')) return 0;
   noun r = most(p, pos, 0, sepace, fel);
   if (!r || !chr(p, pos, ')')) return 0;
   return r;
+}
+
+// a call, (a b c)
+noun call(parser *p, size *pos) {
+  size s = *pos;
+  noun r = parens(p, pos, widerule);
+  if (!r) return 0;
+  notefun(p, s + 1);
+  return C2(K("cncl"), r);
 }
 
 noun brackets(parser *p, size *pos, rule fel) {
@@ -4722,25 +4765,35 @@ noun limb(parser *p, size *pos) {
   noun v;
   switch (c) {
   case '$':
+    // the arm of a gate or trap
     chr(p, pos, '$');
+    note(p, s, *pos, tok_function);
     return nul;
   case ',':
     chr(p, pos, ',');
     return C3(NO, nul, nul);
   case '^': {
+    // ^a skips the nearest a and takes the next, ^^a the next but one:
+    // the carets are colored whole as an operator, as lark notation is
     size n = 0;
     while (chr(p, pos, '^')) n++;
     noun b = symbuc(p, pos);
     if (!b) return 0;
+    note(p, s, s + n, tok_operator);
+    if (b == nul) note(p, s + n, *pos, tok_function);
     return C3(NO, D((u64)n), C2(nul, b));
   }
   case '+':
     chr(p, pos, '+');
     if ((v = dim(p, pos))) return C2(YES, v);
     *pos = s;
-    return (v = ven(p, pos)) ? C2(YES, v) : 0;
+    // fallthrough
   case '-':
-    return (v = ven(p, pos)) ? C2(YES, v) : 0;
+    // lark notation, as +>- for the head of the tail of the tail: of
+    // any length, colored whole as an operator
+    if (!(v = ven(p, pos))) return 0;
+    note(p, s, *pos, tok_operator);
+    return C2(YES, v);
   case '&':
     chr(p, pos, '&');
     return (v = dim(p, pos)) && (v = itemaxis(p, v, 2)) ? C2(YES, v) : 0;
@@ -4757,6 +4810,7 @@ noun limb(parser *p, size *pos) {
 }
 
 noun ropex(parser *p, size *pos, b32 tol) {
+  size from = *pos;
   noun l = limb(p, pos);
   if (!l) return 0;
   size base = p->stk.len;
@@ -4764,6 +4818,10 @@ noun ropex(parser *p, size *pos, b32 tol) {
   for (;;) {
     size s = *pos;
     if (chr(p, pos, '.') && (l = limb(p, pos))) {
+      // ..a is the core that holds a, as ..zuse and ..^$: the first dot
+      // is the subject and the second joins it to a, colored as one mark
+      if (s == from + 1 && p->buf[from] == '.') delimiter(p, from);
+      delimiter(p, s);
       *push(&p->stk, p->a) = l;
       continue;
     }
@@ -4777,7 +4835,20 @@ noun rope(parser *p, size *pos) {
 }
 
 noun ropa(parser *p, size *pos, b32 tol) {
-  return most(p, pos, 0, sepcol, roperule);
+  noun r = rope(p, pos);
+  if (!r) return 0;
+  size base = p->stk.len;
+  *push(&p->stk, p->a) = r;
+  for (;;) {
+    size s = *pos;
+    if (chr(p, pos, ':') && (r = rope(p, pos))) {
+      delimiter(p, s);
+      *push(&p->stk, p->a) = r;
+      continue;
+    }
+    *pos = s;
+    return stklist(p, base);
+  }
 }
 
 // Paths
@@ -4787,7 +4858,7 @@ noun hasp(parser *p, size *pos) {
   noun r;
   if (chr(p, pos, '[') && (r = wide(p, pos)) && chr(p, pos, ']')) return r;
   *pos = s;
-  if ((r = parens(p, pos, widerule))) return C2(K("cncl"), r);
+  if ((r = call(p, pos))) return r;
   *pos = s;
   if (chr(p, pos, '$')) return C3(K("sand"), K("tas"), nul);
   *pos = s;
@@ -5014,7 +5085,7 @@ noun stem(parser *p, size *pos) {
     return stemiota(p, nul);
   }
   if (c == '(') {
-    if ((r = parens(p, pos, widerule))) return C2(K("cncl"), r);
+    if ((r = call(p, pos))) return r;
     *pos = s;
     return stemiota(p, nul);
   }
@@ -5178,11 +5249,15 @@ noun phax(parser *p, nouns *parts) {
 // Irregular forms
 
 noun wede(parser *p, size *pos) {
+  size s = *pos;
   if (!chr(p, pos, '+') && !chr(p, pos, '/')) return 0;
-  return wide(p, pos);
+  noun r = wide(p, pos);
+  if (r) sugar(p, s);
+  return r;
 }
 
 noun rump(parser *p, size *pos) {
+  size from = *pos;
   noun a = rope(p, pos);
   if (!a) return 0;
   size s = *pos;
@@ -5192,11 +5267,14 @@ noun rump(parser *p, size *pos) {
     return C2(K("wing"), a);
   }
   if (!(isatom(hd(a)) && atomis(tl(a), 0))) return 0;
+  // the $ of $/a and $+a is the term %$, not the arm limb took it for
+  if (p->buf[from] == '$') note(p, from, s, tok_term);
   return C2(C3(K("rock"), K("tas"), hd(a)), b);
 }
 
 noun rupl(parser *p, size *pos) {
   b32 sig = 0;
+  size sigat = *pos;
   if (!chr(p, pos, '[')) {
     if (!jest(p, pos, "~[")) return 0;
     sig = 1;
@@ -5216,6 +5294,8 @@ noun rupl(parser *p, size *pos) {
     if (!chr(p, pos, ']')) return 0;
     tail = 0;
   }
+  if (sig) sugar(p, sigat);
+  if (tail) sugar(p, *pos - 1);
   if (sig) {
     return tail ? C2(K("clsg"), C2(C2(K("clsg"), b), nul)) : C2(K("clsg"), b);
   }
@@ -5240,17 +5320,25 @@ noun scatx(parser *p, size *pos, b32 tol) {
   switch (c) {
   case ',':
     chr(p, pos, ',');
-    if ((r = wyde(p, pos))) return C2(K("ktcl"), r);
+    if ((r = wyde(p, pos))) {
+      sugar(p, s);
+      return C2(K("ktcl"), r);
+    }
     *pos = s;
     return (r = rope(p, pos)) ? C2(K("wing"), r) : 0;
   case '!':
     chr(p, pos, '!');
-    if ((r = wide(p, pos))) return C2(K("wtzp"), r);
+    if ((r = wide(p, pos))) {
+      sugar(p, s);
+      return C2(K("wtzp"), r);
+    }
     *pos = s;
     return jest(p, pos, "!!") ? C2(K("zpzp"), nul) : 0;
   case '_':
     chr(p, pos, '_');
-    return (r = wide(p, pos)) ? C3(K("ktcl"), K("bccb"), r) : 0;
+    if (!(r = wide(p, pos))) return 0;
+    sugar(p, s);
+    return C3(K("ktcl"), K("bccb"), r);
   case '$':
     chr(p, pos, '$');
     if (chr(p, pos, '$')) return C3(K("leaf"), K("tas"), nul);
@@ -5281,7 +5369,10 @@ noun scatx(parser *p, size *pos, b32 tol) {
     if ((r = rope(p, pos))) return C3(K("cnts"), r, nul);
     *pos = s;
     chr(p, pos, '&');
-    if ((r = parens(p, pos, widerule))) return C2(K("wtpm"), r);
+    if ((r = parens(p, pos, widerule))) {
+      sugar(p, s);
+      return C2(K("wtpm"), r);
+    }
     *pos = s + 1;
     if ((r = wede(p, pos))) return C2(C3(K("rock"), K("f"), YES), r);
     *pos = s + 1;
@@ -5289,10 +5380,13 @@ noun scatx(parser *p, size *pos, b32 tol) {
   case '\'':
     return (r = qut(p, pos)) ? C3(K("sand"), K("t"), r) : 0;
   case '(':
-    return (r = parens(p, pos, widerule)) ? C2(K("cncl"), r) : 0;
+    return call(p, pos);
   case '*':
     chr(p, pos, '*');
-    if ((r = wyde(p, pos))) return C2(K("kttr"), r);
+    if ((r = wyde(p, pos))) {
+      sugar(p, s);
+      return C2(K("kttr"), r);
+    }
     *pos = s + 1;
     return C2(K("base"), K("noun"));
   case '@':
@@ -5300,7 +5394,10 @@ noun scatx(parser *p, size *pos, b32 tol) {
     return C3(K("base"), K("atom"), mota(p, pos));
   case '+': {
     chr(p, pos, '+');
-    if (chr(p, pos, '(') && (r = wide(p, pos)) && chr(p, pos, ')')) return C2(K("dtls"), r);
+    if (chr(p, pos, '(') && (r = wide(p, pos)) && chr(p, pos, ')')) {
+      sugar(p, s);
+      return C2(K("dtls"), r);
+    }
     *pos = s;
     nouns parts = {0};
     if (soils(p, pos, '+', &parts)) return C3(K("mcfs"), K("knit"), tl(knit(p, &parts)));
@@ -5322,7 +5419,10 @@ noun scatx(parser *p, size *pos, b32 tol) {
     return (r = rope(p, pos)) ? C3(K("cnts"), r, nul) : 0;
   case ':':
     chr(p, pos, ':');
-    if ((r = parens(p, pos, widerule))) return C2(K("mccl"), r);
+    if ((r = parens(p, pos, widerule))) {
+      sugar(p, s);
+      return C2(K("mccl"), r);
+    }
     *pos = s + 1;
     return chr(p, pos, '/') && (r = wide(p, pos)) ? C2(K("mcfs"), r) : 0;
   case '=':
@@ -5332,7 +5432,10 @@ noun scatx(parser *p, size *pos, b32 tol) {
     if (chr(p, pos, '(')) {
       if (!(r = wide(p, pos))) return 0;
       size t = *pos;
-      if (ace(p, pos) && (x = wide(p, pos)) && chr(p, pos, ')')) return C3(K("dtts"), r, x);
+      if (ace(p, pos) && (x = wide(p, pos)) && chr(p, pos, ')')) {
+        sugar(p, s);
+        return C3(K("dtts"), r, x);
+      }
       *pos = t;
       if ((r = makerest(p, pos, r))) r = wart(p, s + 1, *pos, r);
     } else {
@@ -5341,12 +5444,18 @@ noun scatx(parser *p, size *pos, b32 tol) {
     }
     if (r) {
       noun n = autoname(p, r);
-      if (n) return C3(K("ktts"), n, C2(K("kttr"), r));
+      if (n) {
+        sugar(p, s);
+        return C3(K("ktts"), n, C2(K("kttr"), r));
+      }
     }
     return 0;
   case '?':
     chr(p, pos, '?');
-    if ((r = parens(p, pos, wyderule))) return C3(K("ktcl"), K("bcwt"), r);
+    if ((r = parens(p, pos, wyderule))) {
+      sugar(p, s);
+      return C3(K("ktcl"), K("bcwt"), r);
+    }
     *pos = s + 1;
     return C2(K("base"), K("flag"));
   case '[':
@@ -5356,20 +5465,29 @@ noun scatx(parser *p, size *pos, b32 tol) {
     *pos = s;
     chr(p, pos, '^');
     return C2(K("base"), K("cell"));
-  case '`':
+  case '`': {
+    // `a`b: both ticks; `a: the one
+    size tic;
     chr(p, pos, '`');
     if (chr(p, pos, '@')) {
       noun m = mota(p, pos);
-      if (chr(p, pos, '`') && (r = wide(p, pos))) {
+      if ((tic = *pos, chr(p, pos, '`')) && (r = wide(p, pos))) {
+        sugar(p, s);
+        sugar(p, tic);
+        note(p, s + 1, tic, tok_type);
         return C4(K("ktls"), C3(K("sand"), m, nul), K("ktls"), C2(C3(K("sand"), nul, nul), r));
       }
     }
     *pos = s + 1;
     if (chr(p, pos, '*') && chr(p, pos, '`') && (r = wide(p, pos))) {
+      sugar(p, s);
+      sugar(p, s + 2);
       return C3(K("kthp"), C2(K("base"), K("noun")), r);
     }
     *pos = s + 1;
-    if ((x = wyde(p, pos)) && chr(p, pos, '`') && (r = wide(p, pos))) {
+    if ((x = wyde(p, pos)) && (tic = *pos, chr(p, pos, '`')) && (r = wide(p, pos))) {
+      sugar(p, s);
+      sugar(p, tic);
       return C3(K("kthp"), x, r);
     }
     *pos = s + 1;
@@ -5377,7 +5495,10 @@ noun scatx(parser *p, size *pos, b32 tol) {
       return C3(K("ktls"), x, r);
     }
     *pos = s + 1;
-    return (r = wide(p, pos)) ? C2(C3(K("rock"), K("n"), nul), r) : 0;
+    if (!(r = wide(p, pos))) return 0;
+    sugar(p, s);
+    return C2(C3(K("rock"), K("n"), nul), r);
+  }
   case '"': {
     nouns parts = {0};
     return soils(p, pos, 0, &parts) ? knit(p, &parts) : 0;
@@ -5386,7 +5507,10 @@ noun scatx(parser *p, size *pos, b32 tol) {
     if ((r = rope(p, pos))) return C3(K("cnts"), r, nul);
     *pos = s;
     chr(p, pos, '|');
-    if ((r = parens(p, pos, widerule))) return C2(K("wtbr"), r);
+    if ((r = parens(p, pos, widerule))) {
+      sugar(p, s);
+      return C2(K("wtbr"), r);
+    }
     *pos = s + 1;
     if ((r = wede(p, pos))) return C2(C3(K("rock"), K("f"), NO), r);
     *pos = s + 1;
@@ -5395,12 +5519,22 @@ noun scatx(parser *p, size *pos, b32 tol) {
     if ((r = rupl(p, pos))) return r;
     *pos = s;
     chr(p, pos, '~');
-    if ((r = brackets(p, pos, widerule))) return C2(K("clsg"), r);
+    if ((r = brackets(p, pos, widerule))) {
+      sugar(p, s);
+      return C2(K("clsg"), r);
+    }
     *pos = s + 1;
-    if (chr(p, pos, '(') && (x = rope(p, pos)) && ace(p, pos) && (r = wide(p, pos))
-        && ace(p, pos)) {
-      noun l = most(p, pos, 0, sepace, widerule);
-      if (l && chr(p, pos, ')')) return C4(K("cnsg"), x, r, l);
+    if (chr(p, pos, '(') && (x = rope(p, pos)) && ace(p, pos)) {
+      // ~(arm door sample)
+      size door = *pos;
+      noun l;
+      if ((r = wide(p, pos)) && ace(p, pos) && (l = most(p, pos, 0, sepace, widerule))
+          && chr(p, pos, ')')) {
+        sugar(p, s);
+        notefun(p, s + 2);
+        notefun(p, door);
+        return C4(K("cnsg"), x, r, l);
+      }
     }
     *pos = s + 1;
     if ((r = twid(p, pos))) return jock(p, 0, r);
@@ -5413,11 +5547,17 @@ noun scatx(parser *p, size *pos, b32 tol) {
   case '<':
     chr(p, pos, '<');
     r = most(p, pos, 0, sepace, widerule);
-    return r && chr(p, pos, '>') ? C2(K("tell"), r) : 0;
+    if (!r || !chr(p, pos, '>')) return 0;
+    sugar(p, s);
+    sugar(p, *pos - 1);
+    return C2(K("tell"), r);
   case '>':
     chr(p, pos, '>');
     r = most(p, pos, 0, sepace, widerule);
-    return r && chr(p, pos, '<') ? C2(K("yell"), r) : 0;
+    if (!r || !chr(p, pos, '<')) return 0;
+    sugar(p, s);
+    sugar(p, *pos - 1);
+    return C2(K("yell"), r);
   case '#':
     chr(p, pos, '#');
     return reed(p, pos);
@@ -5440,8 +5580,17 @@ noun scatx(parser *p, size *pos, b32 tol) {
 
 noun scadx(parser *p, size *pos, b32 tol);
 
-// what a wide form is, for highlighting
-i32 scatkind(parser *p, size start, noun r) {
+// whether the text from s to e is lark notation and nothing more
+b32 larkonly(parser *p, size s, size e) {
+  for (size i = s; i < e; i++) {
+    u8 c = p->buf[i];
+    if (c != '+' && c != '-' && c != '<' && c != '>') return 0;
+  }
+  return 1;
+}
+
+// what a wide form from start to end is, for highlighting
+i32 scatkind(parser *p, size start, size end, noun r) {
   noun tag = hd(r);
   u64 t = atomfits(tag) ? atomlow(tag) : 0;
   if (t == TW("clsg") && p->buf[start] == '/') return tok_string;
@@ -5454,7 +5603,10 @@ i32 scatkind(parser *p, size start, noun r) {
   if (t == TW("knit")) return tok_string;
   if (t == TW("leaf")) return tok_term;
   if (t == TW("base") || t == TW("like")) return tok_type;
-  if (t == TW("wing") || t == TW("cnts")) return tok_variable;
+  if (t == TW("wing") || t == TW("cnts")) {
+    // a wing that is one lark limb keeps the color limb gave it
+    return larkonly(p, start, end) ? tok_operator : tok_variable;
+  }
   if (t == TW("bust")) return tok_number;
   return -1;
 }
@@ -5463,7 +5615,7 @@ noun scat(parser *p, size *pos) {
   size s = *pos;
   noun r = scatx(p, pos, 0);
   if (r && p->toks && iscell(r)) {
-    i32 k = scatkind(p, s, r);
+    i32 k = scatkind(p, s, *pos, r);
     if (k >= 0) note(p, s, *pos, k);
   }
   return r;
@@ -5493,10 +5645,14 @@ noun scadx(parser *p, size *pos, b32 tol) {
   switch (c) {
   case '_':
     chr(p, pos, '_');
-    return (r = wide(p, pos)) ? C2(K("bccb"), r) : 0;
+    if (!(r = wide(p, pos))) return 0;
+    sugar(p, s);
+    return C2(K("bccb"), r);
   case ',':
     chr(p, pos, ',');
-    return (r = wide(p, pos)) ? C2(K("bcmc"), r) : 0;
+    if (!(r = wide(p, pos))) return 0;
+    sugar(p, s);
+    return C2(K("bcmc"), r);
   case '$':
     return (r = ropa(p, pos, 0)) ? C2(K("like"), r) : 0;
   case '%':
@@ -5510,7 +5666,9 @@ noun scadx(parser *p, size *pos, b32 tol) {
     return 0;
   case '(':
     chr(p, pos, '(');
-    return (x = wide(p, pos)) ? makerest(p, pos, x) : 0;
+    if (!(x = wide(p, pos))) return 0;
+    notefun(p, s + 1);
+    return makerest(p, pos, x);
   case '[':
     return (r = brackets(p, pos, wyderule)) ? C2(K("bccl"), r) : 0;
   case '*':
@@ -5524,7 +5682,10 @@ noun scadx(parser *p, size *pos, b32 tol) {
     return C3(K("base"), K("atom"), mota(p, pos));
   case '?':
     chr(p, pos, '?');
-    if ((r = parens(p, pos, wyderule))) return C2(K("bcwt"), r);
+    if ((r = parens(p, pos, wyderule))) {
+      sugar(p, s);
+      return C2(K("bcwt"), r);
+    }
     *pos = s + 1;
     return C2(K("base"), K("flag"));
   case '~':
@@ -5541,7 +5702,8 @@ noun scadx(parser *p, size *pos, b32 tol) {
     chr(p, pos, '=');
     noun name = 0;
     noun spec;
-    if ((x = sym(p, pos)) && chr(p, pos, '=') && (spec = wyde(p, pos))) {
+    size tis = 0;
+    if ((x = sym(p, pos)) && (tis = *pos, chr(p, pos, '=')) && (spec = wyde(p, pos))) {
       name = x;
     } else {
       *pos = s + 1;
@@ -5549,7 +5711,9 @@ noun scadx(parser *p, size *pos, b32 tol) {
     }
     noun t = autoname(p, spec);
     if (!t) return 0;
+    sugar(p, s);
     if (name) {
+      sugar(p, tis);
       noun parts[3] = {name, D('-'), t};
       t = atomrap3(p->a, parts, 3);
     }
@@ -5558,6 +5722,7 @@ noun scadx(parser *p, size *pos, b32 tol) {
   }
   if (c >= 'a' && c <= 'z') {
     if ((x = sym(p, pos)) && chr(p, pos, '=') && (r = wyde(p, pos))) {
+      sugar(p, s + alen(x));
       return C3(K("bcts"), x, r);
     }
     *pos = s;
@@ -5571,7 +5736,7 @@ noun scad(parser *p, size *pos) {
   size s = *pos;
   noun r = scadx(p, pos, 0);
   if (r && p->toks && iscell(r)) {
-    i32 k = scatkind(p, s, r);
+    i32 k = scatkind(p, s, *pos, r);
     if (k >= 0) note(p, s, *pos, k);
   }
   return r;
@@ -5616,7 +5781,10 @@ noun lomp(parser *p, size *pos, b32 tol) {
   if (!s) return 0;
   size t = *pos;
   noun w;
-  if (chr(p, pos, '=') && (w = wyde(p, pos))) return C3(s, nul, w);
+  if (chr(p, pos, '=') && (w = wyde(p, pos))) {
+    sugar(p, t);
+    return C3(s, nul, w);
+  }
   *pos = t;
   return C2(s, nul);
 }
@@ -5631,12 +5799,16 @@ noun wise(parser *p, size *pos, b32 tol) {
   noun noun_ = C2(K("base"), K("noun"));
   if (chr(p, pos, '=') && (r = wyde(p, pos))) {
     noun t = autoname(p, r);
-    if (t) return C3(K("name"), t, C3(K("spec"), r, noun_));
+    if (t) {
+      sugar(p, s);
+      return C3(K("name"), t, C3(K("spec"), r, noun_));
+    }
   }
   *pos = s;
   if ((x = sym(p, pos))) {
     size t = *pos;
     if ((chr(p, pos, '/') || (*pos = t, chr(p, pos, '='))) && (r = wyde(p, pos))) {
+      if (p->buf[t] == '=') sugar(p, t);
       return C3(K("name"), x, C3(K("spec"), r, noun_));
     }
     *pos = t;
@@ -5653,9 +5825,15 @@ noun teakwyp(parser *p, size *pos) {
   noun n, r;
   if ((n = sym(p, pos)) && chr(p, pos, '=')) {
     size t = *pos;
-    if ((r = rope(p, pos))) return C3(YES, C2(nul, n), r);
+    if ((r = rope(p, pos))) {
+      sugar(p, t - 1);
+      return C3(YES, C2(nul, n), r);
+    }
     *pos = t;
-    if ((r = wide(p, pos))) return C3(NO, C2(nul, n), r);
+    if ((r = wide(p, pos))) {
+      sugar(p, t - 1);
+      return C3(NO, C2(nul, n), r);
+    }
   }
   *pos = s;
   if ((r = rope(p, pos))) return C3(YES, nul, r);
@@ -5702,7 +5880,8 @@ noun bola(parser *p, size *pos, b32 tol) {
   if (!jest(p, pos, "++") || !gap(p, pos)) return 0;
   size t = *pos;
   if (!(n = symbuc(p, pos))) return 0;
-  note(p, s, s + 2, tok_keyword);
+  // the rune is part of the arm name, as in tree-sitter-hoon
+  note(p, s, s + 2, tok_function);
   note(p, t, *pos, tok_function);
   if (!gap(p, pos) || !(h = loaf(p, pos, tol))) return 0;
   return C2(n, h);
@@ -6308,6 +6487,25 @@ runedef *findrune(parser *p, size *pos, runedef *tab, size n) {
   return 0;
 }
 
+// the gate after %-, %+, %^ and %:, and the arm and door after %~, are
+// functions, as they are in (add a b) and ~(put by m). s is the rune.
+// Not the gate of %., which comes last, nor the wing of %=, %_ and %*,
+// which may be a leg
+void noterunefun(parser *p, size s, runedef *r) {
+  if (!p->toks || r->c1 != '%') return;
+  u8 *b = p->buf;
+  b32 door = r->c2 == '~';
+  if (!door && r->c2 != '-' && r->c2 != '+' && r->c2 != '^' && r->c2 != ':') return;
+  size e = s + 2;
+  if (e < p->len && b[e] == '(') e++;
+  else while (e < p->len && (b[e] == ' ' || b[e] == '\n')) e++;
+  notefun(p, e);
+  if (!door) return;
+  while (e < p->len && b[e] != ' ' && b[e] != '\n') e++;
+  while (e < p->len && (b[e] == ' ' || b[e] == '\n')) e++;
+  notefun(p, e);
+}
+
 noun expression(parser *p, size *pos, b32 tol) {
   size s = *pos;
   runedef *r = findrune(p, pos, hoonrunes, countof(hoonrunes));
@@ -6315,6 +6513,7 @@ noun expression(parser *p, size *pos, b32 tol) {
   noun v = toad(p, pos, tol, r->har);
   if (!v) return 0;
   note(p, s, s + 2, tok_keyword);
+  noterunefun(p, s, r);
   switch (r->kind) {
   case rune_runo: return C3(term(r->tag), nul, v);
   case rune_ktcl: return C3(K("ktcl"), term(r->tag), v);
@@ -6416,6 +6615,7 @@ noun structure(parser *p, size *pos, b32 tol) {
 // Irregular suffixes: a=b, a:b, a^b, a(b c)
 
 noun longx(parser *p, size *pos, b32 tol) {
+  size from = *pos;
   noun ros = scat(p, pos);
   if (!ros) return 0;
   size s = *pos;
@@ -6441,7 +6641,13 @@ noun longx(parser *p, size *pos, b32 tol) {
           *pos = t;
           break;
         }
-        if ((w = rope(p, pos)) && ace(p, pos) && (h = wide(p, pos))) {
+        size at = *pos, to;
+        if ((w = rope(p, pos)) && (to = *pos, ace(p, pos)) && (h = wide(p, pos))) {
+          // the wing to change is a name like any other, colored as
+          // scat would color it; a lone $ stays the arm limb took it for
+          if (to != at + 1 || p->buf[at] != '$') {
+            note(p, at, to, larkonly(p, at, to) ? tok_operator : tok_variable);
+          }
           *push(&xs, p->a) = C2(w, h);
           continue;
         }
@@ -6451,6 +6657,9 @@ noun longx(parser *p, size *pos, b32 tol) {
       if (xs.len && chr(p, pos, ')')) {
         x = nounslist(p, &xs);
         kind = 'l';
+        // $ with changes is the arm of a gate or trap, called again;
+        // any other name may be a leg as well as an arm, and is left
+        if (p->buf[from] == '$' && s == from + 1) note(p, from, s, tok_function);
       }
     }
   }
@@ -6481,6 +6690,8 @@ noun longx(parser *p, size *pos, b32 tol) {
     *pos = s;
     return ros;
   }
+  if (kind == ':') delimiter(p, s);
+  else if (kind != 'l') sugar(p, s);
   return r;
 }
 

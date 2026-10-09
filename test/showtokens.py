@@ -33,7 +33,7 @@ recv()
 send({'jsonrpc': '2.0', 'method': 'exit'})
 
 colors = {'comment': 90, 'string': 32, 'number': 35, 'keyword': 31, 'function': 34,
-          'variable': 0, 'type': 36, 'enumMember': 33}
+          'variable': 0, 'type': 36, 'enumMember': 33, 'operator': 93}
 lines = open(path, encoding='utf-8').read().split('\n')
 marks = {}
 line = col = 0
