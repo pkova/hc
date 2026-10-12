@@ -5333,7 +5333,9 @@ noun scatx(parser *p, size *pos, b32 tol) {
       return C2(K("wtzp"), r);
     }
     *pos = s;
-    return jest(p, pos, "!!") ? C2(K("zpzp"), nul) : 0;
+    if (!jest(p, pos, "!!")) return 0;
+    note(p, s, s + 2, tok_keyword);
+    return C2(K("zpzp"), nul);
   case '_':
     chr(p, pos, '_');
     if (!(r = wide(p, pos))) return 0;
@@ -5602,6 +5604,8 @@ i32 scatkind(parser *p, size start, size end, noun r) {
   }
   if (t == TW("knit")) return tok_string;
   if (t == TW("leaf")) return tok_term;
+  // !! as a spec is base void, but keeps the rune color its parser gave it
+  if (t == TW("base") && p->buf[start] == '!') return -1;
   if (t == TW("base") || t == TW("like")) return tok_type;
   if (t == TW("wing") || t == TW("cnts")) {
     // a wing that is one lark limb keeps the color limb gave it
@@ -5692,7 +5696,9 @@ noun scadx(parser *p, size *pos, b32 tol) {
     chr(p, pos, '~');
     return C2(K("base"), K("null"));
   case '!':
-    return jest(p, pos, "!!") ? C2(K("base"), K("void")) : 0;
+    if (!jest(p, pos, "!!")) return 0;
+    note(p, s, s + 2, tok_keyword);
+    return C2(K("base"), K("void"));
   case '^':
     if ((r = ropa(p, pos, 0))) return C2(K("like"), r);
     *pos = s;
