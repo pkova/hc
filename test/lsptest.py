@@ -128,7 +128,7 @@ check('closed kernel', definition(12, behn, 109, 7), (uri(hoon), 733, 4))
 r = request(20, 'textDocument/semanticTokens/full', {'textDocument': {'uri': uri(behn)}})
 data = r['result']['data']
 check('semantic tokens', len(data) > 1000 and len(data) % 5 == 0, True)
-check('token types', max(data[3::5]) < 8, True)
+check('token types', max(data[3::5]) < 9, True)
 
 # a desk without sys/, and its imports from base-dev
 uses = os.path.join(HERE, 'nosys/app/uses.hoon')

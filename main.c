@@ -2494,7 +2494,8 @@ i32 lspmain(arena *a, bufout *out) {
                                    "\"hoverProvider\":true,"
                                    "\"semanticTokensProvider\":{\"legend\":{\"tokenTypes\":"
                                    "[\"comment\",\"string\",\"number\",\"keyword\","
-                                   "\"function\",\"variable\",\"type\",\"enumMember\"],"
+                                   "\"function\",\"variable\",\"type\",\"enumMember\","
+                                   "\"operator\"],"
                                    "\"tokenModifiers\":[]},\"full\":true}},"
                                    "\"serverInfo\":{\"name\":\"hoon\"}}"));
     } else if (s8eqc(m, "workspace/didChangeConfiguration")) {
