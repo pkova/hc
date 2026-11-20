@@ -5,7 +5,7 @@
 import sys, os, json, subprocess, re, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-URBIT = os.path.expanduser('~/Desktop/urbit/pkg')
+URBIT = os.path.join(HERE, 'urbit/pkg')
 binary = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, 'hp-fast')
 proc = subprocess.Popen([binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 

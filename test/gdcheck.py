@@ -2,12 +2,13 @@
 # usage: gdcheck.py [gotodef.txt]
 # Check go to definition answers. Each line is
 #   FILE LINE:COL -> FILE LINE:COL
-# with paths relative to $URBIT (default ~/Desktop/urbit/pkg), or to
+# with paths relative to $URBIT (default urbit/pkg here, which pin.sh
+# makes), or to
 # this directory when they start with ./
 import sys, os, subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-URBIT = os.environ.get('URBIT', os.path.expanduser('~/Desktop/urbit/pkg'))
+URBIT = os.environ.get('URBIT', os.path.join(HERE, 'urbit/pkg'))
 
 def full(p):
     return os.path.join(HERE, p[2:]) if p.startswith('./') else os.path.join(URBIT, p)
