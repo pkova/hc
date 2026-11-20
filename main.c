@@ -1054,11 +1054,16 @@ b32 nameat(s8 src, size i, noun name) {
   return 1;
 }
 
-// the first occurrence of a name between offsets, or the start
+// the first occurrence of a name between offsets, not in a comment, or
+// the start
 size nameinspan(s8 src, size i, size end, noun name) {
   if (end > src.len) end = src.len;
   if (!isatom(name) || !alen(name)) return i;
   for (size j = i; j < end; j++) {
+    if (src.buf[j] == ':' && j + 1 < end && src.buf[j+1] == ':') {
+      while (j < end && src.buf[j] != '\n') j++;
+      continue;
+    }
     if (nameat(src, j, name)) return j;
   }
   // a face named by =prefix=spec is prefix-name
@@ -1210,6 +1215,8 @@ location definition(arena *a, typer *u, noun sut, noun want) {
     noun spot = tl(ctx);
     if (!srcloc(a, srcbywer(hd(spot)), &loc)) return loc;
     size s = hairoffset(loc.src, spotfrom(spot)), e = hairoffset(loc.src, spotto(spot));
+    // an empty one is at the arm of a mold builder
+    if (e == s) e = armend(loc.src, s);
     loc.at = nameinspan(loc.src, s, e, name);
     loc.ok = 1;
   } else if (tagis(ctx, "made")) {

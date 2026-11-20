@@ -38,3 +38,6 @@ arvo/app/hood.hoon 68:17 -> arvo/app/hood.hoon 2:5            # import face
 arvo/gen/hood/clay/merge.hoon 22:19 -> arvo/sys/arvo.hoon 51:5   # name inside a nested spec
 ./desk/app/shadow.hoon 4:5 -> ./desk/app/shadow.hoon 3:7        # one-letter face, shadowed
 ./desk/app/shadow.hoon 5:4 -> ./desk/app/shadow.hoon 1:5        # the outer one
+./desk/app/alias.hoon 8:4 -> ./desk/app/alias.hoon 3:7          # face of a mold behind a =* alias, made late
+./desk/app/alias.hoon 8:8 -> ./desk/app/alias.hoon 4:7
+arvo/sys/vane/gall.hoon 2065:36 -> arvo/sys/hoon.hoon 374:11    # face of a kernel mold builder

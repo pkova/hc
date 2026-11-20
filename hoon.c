@@ -8172,7 +8172,11 @@ noun rest(typer *u, noun typ, noun gen) {
   if (guardhas(u->fan, typ, gen, 0)) return 0;
   guard *fan = u->fan;
   u->fan = guardput(p->a, fan, typ, gen, 0);
+  // an arm isn't under the spot being played, which is of what found it
+  noun spot = u->spot;
+  u->spot = 0;
   noun r = play(u, typ, gen);
+  u->spot = spot;
   u->fan = fan;
   return r;
 }
@@ -9916,6 +9920,30 @@ noun playx(typer *u, noun sut, noun gen, noun *spot) {
     if (IS("dttr")) return K("noun");
     if (IS("dtts") || IS("dtwt") || IS("fits") || IS("wthx")) return tbool(u);
     if (IS("hand")) return hd(g);
+    // the arm of a mold's gate is played later, away from here: the spot
+    // goes in the spec, for +ax to put around what it makes
+    // or without one, in a file without spots, an empty spot at the
+    // arm of the mold builder, where the parser saw it
+    if (IS("ktcl") && u->spots && !tagis(g, "dbug")) {
+      noun at = u->spot;
+      if (!at) {
+        noun v = nounmapget(&armsites, armkey(p->a, gen));
+        u64 x = v ? atomlow(v) : 0;
+        i32 file = (i32)(x >> 40);
+        if (file > 0 && file < srcfiles.len) {
+          noun h = C2(D(x >> 16 & 0xffffff), D(x & 0xffff));
+          at = C3(srcfiles.data[file].wer, h, h);
+        }
+      }
+      if (at) {
+        gen = C2(K("ktcl"), C3(K("dbug"), at, g));
+        continue;
+      }
+    }
+    if (IS("brbc") && u->spots && u->spot && !tagis(tl(g), "dbug")) {
+      gen = C3(K("brbc"), hd(g), C3(K("dbug"), u->spot, tl(g)));
+      continue;
+    }
     if (IS("ktbr") || IS("ktpm") || IS("ktwt")) {
       noun t = play(u, sut, g);
       return t ? wrap(u, t, IS("ktbr") ? "iron" : IS("ktpm") ? "zinc" : "lead") : 0;
