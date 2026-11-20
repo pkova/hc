@@ -15,6 +15,8 @@
 
 #ifdef _MSC_VER
 #pragma comment(linker, "/subsystem:console")
+// the stack of Unix, not Windows' 1MB, for stackdeep below
+#pragma comment(linker, "/stack:8388608")
 #pragma comment(lib, "kernel32.lib")
 #endif
 
@@ -3492,7 +3494,7 @@ i32 srcbywer(noun wer) {
 // what went wrong is kept here where it starts, as a nest that fails,
 // and the innermost spot it's under is added on the way up.
 
-enum { errnone, errnest, errfind, errtext };
+enum { errnone, errnest, errfind, errtext, errdeep };
 
 struct {
   i32   kind;
@@ -3511,6 +3513,26 @@ void errnew(i32 kind) {
 // a failure under a spot: the innermost is kept
 void errspot(noun spot) {
   if (!hcerr.spot) hcerr.spot = spot;
+}
+
+// The compiler recurses on the C stack as deep as the hoon it's
+// compiling does, which for a hoon like an arm whose mold is itself,
+// +$  a  a, among other arms, is forever: hoon runs out of stack and
+// bails. Past stackmax of the 8MB stack, +mint, +mull and +play crash
+// instead, and so does nock where it calls, for a mold like that run
+// to bunt it. That can't be caught, as hoon's bail can't, so deeps
+// counts them for what would otherwise catch it. stacktop is set where
+// the program starts.
+byte *stacktop;
+enum { stackmax = 6 << 20 };
+u64 deeps;
+
+b32 stackdeep(void) {
+  byte here;
+  if (!stacktop || stacktop - &here < stackmax) return 0;
+  errnew(errdeep);
+  deeps++;
+  return 1;
 }
 
 noun peg(parser *p, noun a, noun b);
@@ -9965,6 +9987,7 @@ noun playx(typer *u, noun sut, noun gen, noun *spot) {
 // memoized by hoon identity and subject shape, see playslot
 noun play(typer *u, noun sut, noun gen) {
   PROF(play);
+  if (stackdeep()) return 0;
   if (playmemo.len*4 >= playmemo.cap*3) {
     playcell *old = playmemo.data;
     size oldcap = playmemo.cap;
@@ -10497,7 +10520,7 @@ noun nock(parser *p, noun sub, noun fol) {
       if (isatom(arg)) return 0;
       noun s = nock(p, sub, hd(arg));
       noun f = s ? nock(p, sub, tl(arg)) : 0;
-      if (!f) return 0;
+      if (!f || stackdeep()) return 0;
       sub = s;
       fol = f;
       continue;
@@ -10549,7 +10572,7 @@ noun nock(parser *p, noun sub, noun fol) {
         if (j == jet_crash) return 0;
       }
       noun arm = core ? frag(hd(arg), core) : 0;
-      if (!arm) return 0;
+      if (!arm || stackdeep()) return 0;
       sub = core;
       fol = arm;
       continue;
@@ -10718,6 +10741,7 @@ i32 require(minter *m, noun noy, noun *out, noun *data) {
 // a crash, else a seminoun
 noun araw(minter *m, noun bus, noun fol) {
   PROF(araw);
+  if (stackdeep()) return 0;
   MP;
   #define REQ(noy, d) do { noun o_; i32 r_ = require(m, (noy), &o_, &(d)); \
                            if (!r_) return 0; if (r_ == 1) return o_; } while (0)
@@ -10795,7 +10819,9 @@ noun araw(minter *m, noun bus, noun fol) {
       if (!one || isatom(one)) return one;
       noun k = semmask(one);
       if (tagis(k, "full") && isatom(tl(k))) {
+        u64 d = deeps;
         noun r = nock(p, semdata(one), C3(D(9), hd(arg), C2(D(0), D(1))));
+        if (!r && deeps != d) return 0;
         return r ? semfull(p, r) : nul;
       }
       noun ryf;
@@ -12005,6 +12031,7 @@ b32 stopping(void) {
 
 noun mint(minter *m, noun sut, noun gol, noun gen) {
   if (interrupted && stopping()) return 0;
+  if (stackdeep()) return 0;
   u32 kind = memo_mint + !m->vet;
   size j = memofind(sut, gol, 0, gen, kind);
   if (memo.data[j].sut) return memo.data[j].res;
@@ -12231,6 +12258,7 @@ noun mullx(minter *m, noun sut, noun gol, noun dox, noun gen, noun *spot) {
 
 noun mull(minter *m, noun sut, noun gol, noun dox, noun gen) {
   if (interrupted && stopping()) return 0;
+  if (stackdeep()) return 0;
   u32 kind = memo_mull;
   size j = memofind(sut, gol, dox, gen, kind);
   if (memo.data[j].sut) return memo.data[j].res;
@@ -13015,6 +13043,8 @@ void errwhat(bufout *o, minter *m) {
     tywing(&t, hcerr.hyp);
     append(o, S("find-fail: no "));
     append(o, (s8){t.b.data, t.b.len});
+  } else if (hcerr.kind == errdeep) {
+    append(o, S("nested too deep"));
   } else if (hcerr.kind == errtext) {
     for (noun l = hcerr.text; iscell(l); l = tl(l)) {
       u8 c = (u8)atomlow(hd(l));

@@ -2724,6 +2724,8 @@ i32 parsermain(arena *a, i32 argc, char **argv) {
 
 #ifdef _WIN32
 void mainCRTStartup(void) {
+  byte top;
+  stacktop = &top;
   // reserved, not committed until used
   size cap = (size)1 << 36;
   arena a = {0};
@@ -2737,6 +2739,8 @@ void mainCRTStartup(void) {
 }
 #else
 i32 main(i32 argc, char **argv) {
+  byte top;
+  stacktop = &top;
   // reserved, not touched until used
   size cap = (size)1 << 36;
   arena a = {0};
