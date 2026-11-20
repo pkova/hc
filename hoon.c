@@ -9424,19 +9424,24 @@ size nestslot(noun sut, noun ref) {
 
 i32 nestdextx(typer *u, noun *sutp, noun *refp, nestctx *cp, b32 *ok);
 
+// room for one more answer: past three quarters full, twice the size, as
+// a full table has no empty slot for nestslot to stop at
+void nestroom(void) {
+  if (nestlen*4 < nestcap*3) return;
+  nestcell *old = nestmemo;
+  size oldcap = nestcap;
+  nestcap = oldcap ? oldcap * 2 : 1 << 12;
+  nestmemo = new(&H.perm, nestcell, nestcap);
+  for (size i = 0; i < oldcap; i++) {
+    if (old[i].sut) nestmemo[nestslot(old[i].sut, old[i].ref)] = old[i];
+  }
+  if (oldcap) osrelease((byte*)old, (byte*)(old + oldcap));
+}
+
 b32 nestdext(typer *u, noun sut, noun ref, nestctx c, b32 *ok) {
   size base = nestk.len;
   for (;;) {
-    if (nestlen*4 >= nestcap*3) {
-      nestcell *old = nestmemo;
-      size oldcap = nestcap;
-      nestcap = oldcap ? oldcap * 2 : 1 << 12;
-      nestmemo = new(&H.perm, nestcell, nestcap);
-      for (size i = 0; i < oldcap; i++) {
-        if (old[i].sut) nestmemo[nestslot(old[i].sut, old[i].ref)] = old[i];
-      }
-      if (oldcap) osrelease((byte*)old, (byte*)(old + oldcap));
-    }
+    nestroom();
     b32 r;
     size j = nestslot(sut, ref);
     if (nestmemo[j].sut) {
@@ -9459,9 +9464,11 @@ b32 nestdext(typer *u, noun sut, noun ref, nestctx c, b32 *ok) {
       nestframe *f = &nestk.data[nestk.len - 1];
       if (f->kind == nestmemokind) {
         if ((r && !f->c.reg) || (!r && !f->c.seg)) {
+          // each frame unwound adds one, so room is made for each
+          nestroom();
           j = nestslot(f->sut, f->ref);
+          if (!nestmemo[j].sut) nestlen++;
           nestmemo[j] = (nestcell){f->sut, f->ref, r};
-          nestlen++;
         }
         nestk.len--;
         continue;
@@ -11711,6 +11718,11 @@ noun mile(minter *m, noun sut, noun dox, noun nym, noun hud, noun dom) {
 // Compiling, as +mint: [type nock] for a hoon against a subject, or 0
 // where hoon would crash
 
+// ^~ minted as what's under it, the value not computed now: the type is
+// the same, and the language server only needs types, while computing it
+// walks the whole subject for +bran, for every mold +ax makes
+b32 noktsg;
+
 noun mintx(minter *m, noun sut, noun gol, noun gen) {
   PROF(mint);
   MP;
@@ -11817,7 +11829,7 @@ noun mintx(minter *m, noun sut, noun gol, noun gen) {
     if (IS("ktsg")) {
       // as +blow: the value, if it can be computed now
       noun pro = mint(m, sut, gol, g);
-      if (!pro) return 0;
+      if (!pro || noktsg) return pro;
       noun bus = bran(m, sut);
       noun jon = bus ? araw(m, bus, tl(pro)) : 0;
       if (!jon) return 0;

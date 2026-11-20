@@ -1586,6 +1586,7 @@ i32 diagnosex(arena *a, char *path, diagnostic *d) {
 
 // -e FILE: what's wrong with a file, as path:line:col: message
 i32 lint(arena *a, bufout *out, bufout *err, char *path) {
+  noktsg = 1;
   diagnostic d;
   i32 r = diagnose(a, path, &d);
   if (r < 0) {
@@ -2431,6 +2432,7 @@ void undefer(char *path) {
 
 // run the language server on stdin and stdout
 i32 lspmain(arena *a, bufout *out) {
+  noktsg = 1;
   // documents live in their own arena, requests in the rest
   arena perm = *a;
   size half = (a->end - a->beg) / 8;
